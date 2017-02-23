@@ -14,7 +14,7 @@ custom_style_settings = 'clang_format_custom.sublime-settings'
 
 # Hacky, but there doesn't seem to be a cleaner way to do this for now.
 # We need to be able to load all these settings from the settings file.
-all_settings  = [
+style_settings  = [
     "BasedOnStyle", "AccessModifierOffset", "AlignAfterOpenBracket",
     "AlignConsecutiveAssignments", "AlignConsecutiveDeclarations",
     "AlignEscapedNewlinesLeft", "AlignOperands", "AlignTrailingComments",
@@ -24,13 +24,13 @@ all_settings  = [
     "AllowShortLoopsOnASingleLine", "AlwaysBreakAfterDefinitionReturnType",
     "AlwaysBreakBeforeMultilineStrings", "AlwaysBreakTemplateDeclarations",
     "BinPackArguments", "BinPackParameters", "BraceWrapping",
-    "BreakAfterJavaFieldAnnotations", "BreakBeforeBinaryOperators", 
-    "BreakBeforeBraces", "BreakBeforeTernaryOperators", 
+    "BreakAfterJavaFieldAnnotations", "BreakBeforeBinaryOperators",
+    "BreakBeforeBraces", "BreakBeforeTernaryOperators",
     "BreakConstructorInitializersBeforeComma", "ColumnLimit", "CommentPragmas",
     "ConstructorInitializerAllOnOneLineOrOnePerLine",
     "ConstructorInitializerIndentWidth", "ContinuationIndentWidth",
     "Cpp11BracedListStyle", "DerivePointerAlignment", "DisableFormat",
-    "ExperimentalAutoDetectBinPacking", "ForEachMacros", "IncludeCategories", 
+    "ExperimentalAutoDetectBinPacking", "ForEachMacros", "IncludeCategories",
     "IndentCaseLabels", "IndentWidth", "IndentWrappedFunctionNames",
     "KeepEmptyLinesAtTheStartOfBlocks", "Language", "MacroBlockBegin", "MacroBlockEnd",
     "MaxEmptyLinesToKeep", "NamespaceIndentation", "ObjCBlockIndentWidth",
@@ -136,32 +136,17 @@ def dic_to_yaml_simple(d):
     return output
 
 
-# We store a set of customised values in a sublime settings file, so that it is
-# possible to very quickly customise the output.
-# This function returns the correct customised style tag.
-def load_custom():
-    custom_settings = sublime.load_settings(custom_style_settings)
-    keys = dict()
-    for v in all_settings:
-        result = custom_settings.get(v, None)
-        if result != None:
-            keys[v] = result
-    out = "-style={" + dic_to_yaml_simple(keys) + "}"
-
-    return out
-
-
 # Display input panel to update the path.
 def update_path():
     load_settings()
     w = sublime.active_window()
-    w.show_input_panel("Path to clang-format: ", binary, set_path, None, None)
+    w.show_input_panel("Path to clang-format: ", format_settings['binary'], set_path, None, None)
 
 
 # Check that the binary can be found and is executable.
 def check_binary():
     # If we couldn't find the binary.
-    if (which(binary) == None):
+    if (which(format_settings['binary']) == None):
         # Try to guess the correct setting.
         if (which(default_binary) != None):
             # Looks like clang-format is in the path, remember that.
@@ -176,28 +161,68 @@ def check_binary():
             return False
     return True
 
-
 # Load settings and put their values into global scope.
 # Probably a nicer way of doing this, but it's simple enough and it works fine.
 def load_settings():
     # We set these globals.
-    global binary
-    global style
-    global format_on_save
-    global languages
+    global format_settings
+
+    # Define default settings
+    format_settings = {
+        'binary': default_binary,
+        'format_on_save': False,
+        'languages': ['C', 'C++', 'C++11', 'JavaScript'],
+        'style': 'LLVM',
+    }
+    # Load normal settings
     settings_global = sublime.load_settings(settings_file)
-    settings_local = sublime.active_window().active_view().settings().get('ClangFormat', {})
-    load = lambda name, default: settings_local.get(name, settings_global.get(name, default))
-    # Load settings, with defaults.
-    binary         = load('binary', default_binary)
-    style          = load('style', styles[0])
-    format_on_save = load('format_on_save', False)
-    languages      = load('languages', ['C', 'C++', 'C++11', 'JavaScript'])
+    settings_project = sublime.active_window().active_view().settings().get('ClangFormat', {})
+    load_setting = (lambda name, default:
+        settings_project.get(name, settings_global.get(name, default)))
+
+    # Load regular settings
+    for key, default_value in format_settings.items():
+        format_settings[key] = load_setting(key, default_value)
+
+    # Special handling for style settings
+    if format_settings['style'] == "File":
+        # We use 'file' not 'File' when passing to the binary.
+        # But all the other styles are in all caps.
+        format_settings['style'] = "file"
+
+    if format_settings['style'].lower() == "custom":
+        # Style in clang_format_custom file
+        custom_file_settings = sublime.load_settings(custom_style_settings)
+        file_style = dict((key, custom_file_settings.get(key))
+            for key in style_settings if custom_file_settings.has(key))
+
+        # Style in regular settings
+        global_style = settings_global.get('custom_style', {})
+        # File stored in project
+        project_style = settings_project.get('custom_style', {})
+        # We could merge the global style in to some of these, but it might
+        # introduce unexpected formatting.
+        if project_style:
+            # If the project style exists, it takes precedent.
+            custom_style = project_style
+        elif file_style:
+            # Followed by a custom file.
+            custom_style = file_style
+        else:
+            # Global style has the least weight.
+            custom_style = global_style
+
+        style_command = [format_settings['binary'],
+                         "-style={" + dic_to_yaml_simple(custom_style) + "}"]
+    else:
+        style_command = [format_settings['binary'], '-style', format_settings['style']]
+    format_settings['style_command'] = style_command
 
 
 def is_supported(lang):
     load_settings()
-    return any((lang.endswith((l + '.tmLanguage', l + '.sublime-syntax')) for l in languages))
+    return any((lang.endswith((l + '.tmLanguage', l + '.sublime-syntax'))
+               for l in format_settings['languages']))
 
 
 # Triggered when the user runs clang format.
@@ -215,18 +240,7 @@ class ClangFormatCommand(sublime_plugin.TextCommand):
         if encoding is None:
             encoding = 'utf-8'
 
-        # We use 'file' not 'File' when passing to the binary.
-        # But all the other styles are in all caps.
-        _style = style
-        if style == "File":
-            _style = "file"
-
-        command = []
-
-        if style == "Custom":
-            command = [binary, load_custom()]
-        else:
-            command = [binary, '-style', _style]
+        command = format_settings['style_command'].copy()
 
         regions = []
         if whole_buffer:
@@ -297,7 +311,7 @@ class clangFormatEventListener(sublime_plugin.EventListener):
         if is_supported(syntax):
             # Ensure that settings are up to date.
             load_settings()
-            if format_on_save:
+            if format_settings['format_on_save']:
                 print("Auto-applying Clang Format on save.")
                 view.run_command("clang_format", {"whole_buffer": True})
 

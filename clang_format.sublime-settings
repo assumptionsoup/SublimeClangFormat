@@ -17,6 +17,12 @@
 
     "style": "Google",
 
+    // If "style" is set to "Custom", in addition to saving a style in a
+    // separate file you can fill out this dictionary with a custom style.
+    // This setting primarily exists to allow custom styles in individual
+    // sublime-projects.
+    "custom_style": {},
+
     // Setting this to true will run the formatter on every save. If you want to
     // only enable this for a given project, try checking out the package
     // "Project-Specific".
